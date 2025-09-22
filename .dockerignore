@@ -1,0 +1,27 @@
+dist/
+node_modules/
+.env
+.vscode/
+
+
+# Node modules y logs
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Archivos de entorno
+.env
+.env.*
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*
+
+# Sockets y bases de datos locales
+*.sock
+mysql
+postgres
