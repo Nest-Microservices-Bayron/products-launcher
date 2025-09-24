@@ -14,8 +14,11 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=root
       - MYSQL_DATABASE=productsdb
-      - MYSQL_USER=root
-      - MYSQL_PASSWORD=root
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
   
   client-gateway:
     build: ./client-gateway
@@ -38,28 +41,35 @@ services:
       - 5432:5432
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=ryshen1942
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=ordersdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      timeout: 20s
+      retries: 10
 
   orders-ms:
     depends_on:
-      - orders-db
+      orders-db:
+        condition: service_healthy
     build: ./orders-ms
     volumes:
       - ./orders-ms/src:/usr/src/app/src
-    command: npm run start:dev
+    command: sh -c "while ! nc -z orders-db 5432; do sleep 2; done; echo 'PostgreSQL listo'; sleep 5; npx prisma migrate deploy; npm run start:dev"
     environment:
       - PORT=3002
       - DATABASE_URL=postgresql://postgres:ryshen1942@orders-db:5432/ordersdb?schema=public
       - NATS_SERVERS=nats://nats-server:4222
+    
 
   products-ms:
     depends_on:
-      - products-db
+      products-db:
+        condition: service_healthy
     build: ./products-ms
     volumes:
       - ./products-ms/src:/usr/src/app/src
-    command: sh -c "./wait-for-mysql.sh products-db 3306 npm run start:dev"
+    command: sh -c "while ! nc -z products-db 3306; do sleep 2; done; echo 'MySQL listo'; npx prisma migrate deploy; npm run start:dev"
     environment:
       - PORT=3001
       - DATABASE_URL=mysql://root:root@products-db:3306/productsdb
