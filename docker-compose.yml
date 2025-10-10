@@ -3,98 +3,134 @@ services:
     image: nats:latest
     ports:
       - "8222:8222"
-  products-db:
-    container_name: products_database
-    image: mysql:8.0
-    restart: always
-    volumes:
-      - ./products-ms/mysql:/var/lib/mysql
-    ports:
-      - 3306:3306
-    environment:
-      - MYSQL_ROOT_PASSWORD=root
-      - MYSQL_DATABASE=productsdb
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
+  # products-db:
+  #   container_name: products_database
+  #   image: mysql:8.0
+  #   restart: always
+  #   volumes:
+  #     - ./products-ms/mysql:/var/lib/mysql
+  #   ports:
+  #     - 3306:3306
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=root
+  #     - MYSQL_DATABASE=productsdb
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     timeout: 20s
+  #     retries: 10
 
   
   client-gateway:
-    build: ./client-gateway
+    build: 
+      context: ./client-gateway
+      dockerfile: Dockerfile
     ports:
       - ${CLIENT_GATEWAY_PORT}:3000
-    volumes:
-      - ./client-gateway/src:/usr/src/app/src
     command: npm run start:dev
     environment:
       - PORT=3000
       - NATS_SERVERS=nats://nats-server:4222
-  
-  orders-db:
-    container_name: orders_database
-    image: postgres:16.2
-    restart: always
-    volumes:
-      - ./orders-ms/postgres:/var/lib/postgresql/data
-    ports:
-      - 5432:5432
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=ordersdb
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      timeout: 20s
-      retries: 10
+    develop:
+      watch:
+        - action: sync
+          path: ./client-gateway/src/
+          target: /usr/src/app/src
+          ignore:
+            - node_modules/
+        - action: rebuild
+          path: ./client-gateway/package.json
+        - action: rebuild
+          path: ./client-gateway/Dockerfile
 
-  orders-ms:
-    depends_on:
-      orders-db:
-        condition: service_healthy
-    build: ./orders-ms
+  auth-ms:
+    build:
+      context: ./auth-ms
+      dockerfile: Dockerfile
     volumes:
-      - ./orders-ms/src:/usr/src/app/src
-    command: sh -c "while ! nc -z orders-db 5432; do sleep 2; done; echo 'PostgreSQL listo'; sleep 5; npx prisma migrate deploy; npm run start:dev"
+      - /usr/src/app/node_modules
+    command: npm run start:dev
     environment:
-      - PORT=3002
-      - DATABASE_URL=postgresql://postgres:ryshen1942@orders-db:5432/ordersdb?schema=public
+      - PORT=3000
       - NATS_SERVERS=nats://nats-server:4222
+      - DATABASE_URL=${AUTH_DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+    develop:
+      watch:
+        - action: sync
+          path: ./auth-ms/src
+          target: /usr/src/app/src
+          ignore: 
+            - node_modules/
+        - action: rebuild
+          path: ./auth-ms/package.json
+        - action: rebuild
+          path: ./auth-ms/Dockerfile
+    
+  
+#   orders-db:
+#     container_name: orders_database
+#     image: postgres:16.2
+#     restart: always
+#     volumes:
+#       - ./orders-ms/postgres:/var/lib/postgresql/data
+#     ports:
+#       - 5432:5432
+#     environment:
+#       - POSTGRES_USER=postgres
+#       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+#       - POSTGRES_DB=ordersdb
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U postgres"]
+#       timeout: 20s
+#       retries: 10
+
+#   orders-ms:
+#     depends_on:
+#       orders-db:
+#         condition: service_healthy
+#     build: ./orders-ms
+#     volumes:
+#       - ./orders-ms/src:/usr/src/app/src
+#     command: sh -c "while ! nc -z orders-db 5432; do sleep 2; done; echo 'PostgreSQL listo'; sleep 5; npx prisma migrate deploy; npm run start:dev"
+#     environment:
+#       - PORT=3002
+#       - DATABASE_URL=postgresql://postgres:ryshen1942@orders-db:5432/ordersdb?schema=public
+#       - NATS_SERVERS=nats://nats-server:4222
     
 
-  products-ms:
-    depends_on:
-      products-db:
-        condition: service_healthy
-    build: ./products-ms
-    volumes:
-      - ./products-ms/src:/usr/src/app/src
-    command: sh -c "while ! nc -z products-db 3306; do sleep 2; done; echo 'MySQL listo'; npx prisma migrate deploy; npm run start:dev"
-    environment:
-      - PORT=3001
-      - DATABASE_URL=mysql://root:root@products-db:3306/productsdb
-      - NATS_SERVERS=nats://nats-server:4222
+#   products-ms:
+#     depends_on:
+#       products-db:
+#         condition: service_healthy
+#     build: ./products-ms
+#     volumes:
+#       - ./products-ms/src:/usr/src/app/src
+#     command: sh -c "while ! nc -z products-db 3306; do sleep 2; done; echo 'MySQL listo'; npx prisma migrate deploy; npm run start:dev"
+#     environment:
+#       - PORT=3001
+#       - DATABASE_URL=mysql://root:root@products-db:3306/productsdb
+#       - NATS_SERVERS=nats://nats-server:4222
 
 
-# ----------------------------------------------
-# payments-ms
-# ---------------------------------------------
+# # ----------------------------------------------
+# # payments-ms
+# # ---------------------------------------------
 
-  payments-ms:
-    container_name: payments-ms
-    build: ./payments-ms
-    volumes : 
-      - ./payments-ms/src:/usr/app/src
-    command: npm run start:dev
-    ports:
-    - ${PAYMENTS_MS_PORT}:${PAYMENTS_MS_PORT}
-    environment:
-      - PORT=${PAYMENTS_MS_PORT}
-      - NATS_SERVERS=nats://nats-server:4222
-      - STRIPE_SECRET=${STRIPE_SECRET}
-      - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL}
-      - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL}
-      - STRIPE_ENDPOINT_SECRET=${STRIPE_ENDPOINT_SECRET}
+#   payments-ms:
+#     container_name: payments-ms
+#     build: ./payments-ms
+#     volumes : 
+#       - ./payments-ms/src:/usr/app/src
+#     command: npm run start:dev
+#     ports:
+#     - ${PAYMENTS_MS_PORT}:${PAYMENTS_MS_PORT}
+#     environment:
+#       - PORT=${PAYMENTS_MS_PORT}
+#       - NATS_SERVERS=nats://nats-server:4222
+#       - STRIPE_SECRET=${STRIPE_SECRET}
+#       - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL}
+#       - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL}
+#       - STRIPE_ENDPOINT_SECRET=${STRIPE_ENDPOINT_SECRET}
 
 
 
