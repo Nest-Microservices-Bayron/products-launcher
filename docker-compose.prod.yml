@@ -1,0 +1,252 @@
+
+services:
+  # ==============================================
+  # NATS Server
+  # ==============================================
+  nats-server:
+    container_name: nats-server
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"  # Puerto principal de NATS
+    networks:
+      - microservices-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ==============================================
+  # Products Database (MySQL)
+  # ==============================================
+  products-db:
+    container_name: products_database
+    image: mysql:8.0
+    restart: unless-stopped
+    volumes:
+      - products-data:/var/lib/mysql
+      - ./products-ms/init-db:/docker-entrypoint-initdb.d
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root}
+      - MYSQL_DATABASE=productsdb
+      - MYSQL_USER=${MYSQL_USER:-products_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-products_pass}
+      - MYSQL_INNODB_BUFFER_POOL_SIZE=256M
+      - MYSQL_MAX_CONNECTIONS=100
+    networks:
+      - microservices-network
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_allowed_packet=64M
+      --innodb_log_file_size=128M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ==============================================
+  # Client Gateway
+  # ==============================================
+  client-gateway:
+    container_name: client-gateway
+    build: 
+      context: ./client-gateway
+      dockerfile: Dockerfile.prod
+    image: client-gateway-prod:latest
+    ports:
+      - "${CLIENT_GATEWAY_PORT:-3000}:${CLIENT_GATEWAY_PORT:-3000}"
+    environment:
+      - PORT=${CLIENT_GATEWAY_PORT:-3000}
+      - NATS_SERVERS=nats://nats-server:4222
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    networks:
+      - microservices-network
+    depends_on:
+      nats-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:${CLIENT_GATEWAY_PORT:-3000}/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================
+  # Products Microservice
+  # ==============================================
+  products-ms:
+    container_name: products-ms
+    build: 
+      context: ./products-ms
+      dockerfile: Dockerfile.prod
+    image: products-ms-prod:latest
+    environment:
+      - PORT=3001
+      - DATABASE_URL=mysql://${MYSQL_USER:-products_user}:${MYSQL_PASSWORD:-products_pass}@products-db:3306/productsdb
+      - NATS_SERVERS=nats://nats-server:4222
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    networks:
+      - microservices-network
+    depends_on:
+      products-db:
+        condition: service_healthy
+      nats-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================
+  # Payments Microservice
+  # ==============================================
+  payments-ms:
+    container_name: payments-ms
+    build: 
+      context: ./payments-ms
+      dockerfile: Dockerfile.prod
+    image: payments-ms-prod:latest
+    environment:
+      - PORT=${PAYMENTS_MS_PORT:-3003}
+      - NATS_SERVERS=nats://nats-server:4222
+      - STRIPE_SECRET=${STRIPE_SECRET}
+      - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL}
+      - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL}
+      - STRIPE_ENDPOINT_SECRET=${STRIPE_ENDPOINT_SECRET}
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    networks:
+      - microservices-network
+    depends_on:
+      nats-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:${PAYMENTS_MS_PORT:-3003}/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================
+  # Orders Microservice (PostgreSQL)
+  # ==============================================
+  orders-db:
+    container_name: orders_database
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - orders-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=ordersdb
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ==============================================
+  # Orders Microservice
+  # ==============================================
+
+  orders-ms:
+    container_name: orders-ms
+    build: 
+      context: ./orders-ms
+      dockerfile: Dockerfile.prod
+    image: orders-ms-prod:latest
+    environment:
+      - PORT=3002
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@orders-db:5432/ordersdb?schema=public
+      - NATS_SERVERS=nats://nats-server:4222
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+    networks:
+      - microservices-network
+    depends_on:
+      orders-db:
+        condition: service_healthy
+      nats-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3002/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # ==============================================
+  # Auth Microservice
+  # ==============================================
+  
+  auth-ms:
+    container_name: auth-ms
+    build:
+      context: ./auth-ms
+      dockerfile: Dockerfile.prod
+    image: auth-ms-prod:latest
+    environment:
+      - PORT=3000
+      - NATS_SERVERS=nats://nats-server:4222
+      - DATABASE_URL=mongodb+srv://bayron:TDtalcqk6eic99h6@resourcecloud.b1qqh.mongodb.net/AuthDB
+      - JWT_SECRET=${JWT_SECRET}
+      - NODE_ENV=production
+    networks:
+      - microservices-network
+    depends_on:
+      nats-server:
+        condition: service_started
+    restart: unless-stopped
+      
+
+networks:
+  microservices-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  products-data:
+    name: products-mysql-data-prod
+    driver: local
+  orders-data:
+    name: orders-postgres-data-prod
+    driver: local

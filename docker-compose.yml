@@ -1,35 +1,82 @@
 services:
+# ==============================================
+# NATS Message Broker
+# ==============================================
   nats-server:
     image: nats:latest
     ports:
       - "8222:8222"
-  # products-db:
-  #   container_name: products_database
-  #   image: mysql:8.0
-  #   restart: always
-  #   volumes:
-  #     - ./products-ms/mysql:/var/lib/mysql
-  #   ports:
-  #     - 3306:3306
-  #   environment:
-  #     - MYSQL_ROOT_PASSWORD=root
-  #     - MYSQL_DATABASE=productsdb
-  #   healthcheck:
-  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-  #     timeout: 20s
-  #     retries: 10
+    networks:
+      - microservices-network
 
-  
+  # ==============================================
+  # Products Database (MySQL)
+  # ==============================================
+  products-db:
+    container_name: products_database
+    image: mysql:8.0
+    restart: unless-stopped
+    volumes:
+      - products-data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root}
+      - MYSQL_DATABASE=productsdb
+      - MYSQL_USER=${MYSQL_USER:-products_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-products_pass}
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ==============================================
+  # Orders Database (PostgreSQL)
+  # ==============================================
+  orders-db:
+    container_name: orders_database
+    image: postgres:16.2
+    restart: unless-stopped
+    volumes:
+      - orders-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=ordersdb
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ordersdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+# ==============================================
+# Client Gateway (API Gateway)
+# ==============================================  
   client-gateway:
+    container_name: client-gateway
     build: 
       context: ./client-gateway
       dockerfile: Dockerfile
     ports:
-      - ${CLIENT_GATEWAY_PORT}:3000
+      - "${CLIENT_GATEWAY_PORT:-3000}:3000"
+    networks:
+      - microservices-network
     command: npm run start:dev
     environment:
       - PORT=3000
       - NATS_SERVERS=nats://nats-server:4222
+    depends_on:
+      nats-server:
+        condition: service_started
+    restart: unless-stopped
     develop:
       watch:
         - action: sync
@@ -39,8 +86,9 @@ services:
             - node_modules/
         - action: rebuild
           path: ./client-gateway/package.json
-        - action: rebuild
-          path: ./client-gateway/Dockerfile
+# ==============================================
+# Auth Microservice
+# ==============================================
 
   auth-ms:
     build:
@@ -65,73 +113,125 @@ services:
           path: ./auth-ms/package.json
         - action: rebuild
           path: ./auth-ms/Dockerfile
-    
-  
-#   orders-db:
-#     container_name: orders_database
-#     image: postgres:16.2
-#     restart: always
-#     volumes:
-#       - ./orders-ms/postgres:/var/lib/postgresql/data
-#     ports:
-#       - 5432:5432
-#     environment:
-#       - POSTGRES_USER=postgres
-#       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-#       - POSTGRES_DB=ordersdb
-#     healthcheck:
-#       test: ["CMD-SHELL", "pg_isready -U postgres"]
-#       timeout: 20s
-#       retries: 10
 
-#   orders-ms:
-#     depends_on:
-#       orders-db:
-#         condition: service_healthy
-#     build: ./orders-ms
-#     volumes:
-#       - ./orders-ms/src:/usr/src/app/src
-#     command: sh -c "while ! nc -z orders-db 5432; do sleep 2; done; echo 'PostgreSQL listo'; sleep 5; npx prisma migrate deploy; npm run start:dev"
-#     environment:
-#       - PORT=3002
-#       - DATABASE_URL=postgresql://postgres:ryshen1942@orders-db:5432/ordersdb?schema=public
-#       - NATS_SERVERS=nats://nats-server:4222
-    
+# ==============================================
+# Orders Microservice
+# ==============================================
+  orders-ms:
+    container_name: orders-ms
+    build: 
+      context: ./orders-ms
+      dockerfile: Dockerfile
+    volumes:
+      - /usr/src/app/node_modules
+    networks:
+      - microservices-network
+    command: sh -c "npx prisma migrate deploy && npm run start:dev"
+    environment:
+      - PORT=3002
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@orders-db:5432/ordersdb?schema=public
+      - NATS_SERVERS=nats://nats-server:4222
+    depends_on:
+      orders-db:
+        condition: service_healthy
+      nats-server:
+        condition: service_started
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync
+          path: ./orders-ms/src
+          target: /usr/src/app/src
+          ignore:
+            - node_modules/
+        - action: rebuild
+          path: ./orders-ms/package.json
+# ==============================================
+# Products Microservice
+# ==============================================    
 
-#   products-ms:
-#     depends_on:
-#       products-db:
-#         condition: service_healthy
-#     build: ./products-ms
-#     volumes:
-#       - ./products-ms/src:/usr/src/app/src
-#     command: sh -c "while ! nc -z products-db 3306; do sleep 2; done; echo 'MySQL listo'; npx prisma migrate deploy; npm run start:dev"
-#     environment:
-#       - PORT=3001
-#       - DATABASE_URL=mysql://root:root@products-db:3306/productsdb
-#       - NATS_SERVERS=nats://nats-server:4222
+  products-ms:
+    container_name: products-ms
+    build: 
+      context: ./products-ms
+      dockerfile: Dockerfile
+    volumes:
+      - /usr/src/app/node_modules
+    networks:
+      - microservices-network
+    command: sh -c "npx prisma migrate deploy && npm run start:dev"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=mysql://${MYSQL_USER:-root}:${MYSQL_PASSWORD:-root}@products-db:3306/productsdb
+      - NATS_SERVERS=nats://nats-server:4222
+    depends_on:
+      products-db:
+        condition: service_healthy
+      nats-server:
+        condition: service_started
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync
+          path: ./products-ms/src
+          target: /usr/src/app/src
+          ignore:
+            - node_modules/
+        - action: rebuild
+          path: ./products-ms/package.json
 
 
-# # ----------------------------------------------
-# # payments-ms
-# # ---------------------------------------------
+  # ==============================================
+  # Payments Microservice
+  # ==============================================
+  payments-ms:
+    container_name: payments-ms
+    build: 
+      context: ./payments-ms
+      dockerfile: Dockerfile
+    volumes: 
+      - /usr/src/app/node_modules
+    networks:
+      - microservices-network
+    command: npm run start:dev
+    ports:
+      - "${PAYMENTS_MS_PORT:-3003}:${PAYMENTS_MS_PORT:-3003}"
+    environment:
+      - PORT=${PAYMENTS_MS_PORT:-3003}
+      - NATS_SERVERS=nats://nats-server:4222
+      - STRIPE_SECRET=${STRIPE_SECRET}
+      - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL}
+      - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL}
+      - STRIPE_ENDPOINT_SECRET=${STRIPE_ENDPOINT_SECRET}
+    depends_on:
+      nats-server:
+        condition: service_started
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync
+          path: ./payments-ms/src
+          target: /usr/src/app/src
+          ignore:
+            - node_modules/
+        - action: rebuild
+          path: ./payments-ms/package.json
 
-#   payments-ms:
-#     container_name: payments-ms
-#     build: ./payments-ms
-#     volumes : 
-#       - ./payments-ms/src:/usr/app/src
-#     command: npm run start:dev
-#     ports:
-#     - ${PAYMENTS_MS_PORT}:${PAYMENTS_MS_PORT}
-#     environment:
-#       - PORT=${PAYMENTS_MS_PORT}
-#       - NATS_SERVERS=nats://nats-server:4222
-#       - STRIPE_SECRET=${STRIPE_SECRET}
-#       - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL}
-#       - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL}
-#       - STRIPE_ENDPOINT_SECRET=${STRIPE_ENDPOINT_SECRET}
+# ==============================================
+# Networks
+# ==============================================
+networks:
+  microservices-network:
+    driver: bridge
+    name: microservices-network
 
-
+# ==============================================
+# Volumes (Named volumes en lugar de bind mounts)
+# ==============================================
+volumes:
+  products-data:
+    name: products-mysql-data
+  orders-data:
+    name: orders-postgres-data
 
 
