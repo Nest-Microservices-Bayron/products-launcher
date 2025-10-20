@@ -189,7 +189,7 @@ services:
     image: orders-ms-prod:latest
     environment:
       - PORT=3002
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@orders-db:5432/ordersdb?schema=public
+      - DATABASE_URL=${ORDERS_DATABASE_URL}
       - NATS_SERVERS=nats://nats-server:4222
       - NODE_ENV=production
       - LOG_LEVEL=info
