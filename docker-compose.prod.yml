@@ -17,39 +17,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-
-  # ==============================================
-  # Products Database (MySQL)
-  # ==============================================
-  products-db:
-    container_name: products_database
-    image: mysql:8.0
-    restart: unless-stopped
-    volumes:
-      - products-data:/var/lib/mysql
-      - ./products-ms/init-db:/docker-entrypoint-initdb.d
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root}
-      - MYSQL_DATABASE=productsdb
-      - MYSQL_USER=${MYSQL_USER:-products_user}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-products_pass}
-      - MYSQL_INNODB_BUFFER_POOL_SIZE=256M
-      - MYSQL_MAX_CONNECTIONS=100
-    networks:
-      - microservices-network
-    command: >
-      --default-authentication-plugin=mysql_native_password
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --max_allowed_packet=64M
-      --innodb_log_file_size=128M
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
-
   # ==============================================
   # Client Gateway
   # ==============================================
@@ -58,7 +25,7 @@ services:
     build: 
       context: ./client-gateway
       dockerfile: Dockerfile.prod
-    image: client-gateway-prod:latest
+    image: northamerica-northeast1-docker.pkg.dev/microservices/image-registry/client-gateway
     ports:
       - "${CLIENT_GATEWAY_PORT:-3000}:${CLIENT_GATEWAY_PORT:-3000}"
     environment:
@@ -92,18 +59,18 @@ services:
     build: 
       context: ./products-ms
       dockerfile: Dockerfile.prod
-    image: products-ms-prod:latest
+      args:
+        - PRODUCTS_DATABASE_URL=${PRODUCTS_DATABASE_URL}
+    image: northamerica-northeast1-docker.pkg.dev/microservices/image-registry/products-ms
     environment:
       - PORT=3001
-      - DATABASE_URL=mysql://${MYSQL_USER:-products_user}:${MYSQL_PASSWORD:-products_pass}@products-db:3306/productsdb
+      - DATABASE_URL=${PRODUCTS_DATABASE_URL}
       - NATS_SERVERS=nats://nats-server:4222
       - NODE_ENV=production
       - LOG_LEVEL=info
     networks:
       - microservices-network
     depends_on:
-      products-db:
-        condition: service_healthy
       nats-server:
         condition: service_healthy
     restart: unless-stopped
@@ -127,7 +94,7 @@ services:
     build: 
       context: ./payments-ms
       dockerfile: Dockerfile.prod
-    image: payments-ms-prod:latest
+    image: northamerica-northeast1-docker.pkg.dev/microservices/image-registry/payments-ms
     environment:
       - PORT=${PAYMENTS_MS_PORT:-3003}
       - NATS_SERVERS=nats://nats-server:4222
@@ -139,6 +106,8 @@ services:
       - LOG_LEVEL=info
     networks:
       - microservices-network
+    ports:
+      - "${PAYMENTS_MS_PORT:-3003}:${PAYMENTS_MS_PORT:-3003}"
     depends_on:
       nats-server:
         condition: service_healthy
@@ -156,28 +125,6 @@ services:
         max-file: "3"
 
   # ==============================================
-  # Orders Microservice (PostgreSQL)
-  # ==============================================
-  orders-db:
-    container_name: orders_database
-    image: postgres:16-alpine
-    restart: unless-stopped
-    volumes:
-      - orders-data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=ordersdb
-    networks:
-      - microservices-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
-
-  # ==============================================
   # Orders Microservice
   # ==============================================
 
@@ -186,7 +133,9 @@ services:
     build: 
       context: ./orders-ms
       dockerfile: Dockerfile.prod
-    image: orders-ms-prod:latest
+      args:
+        - ORDERS_DATABASE_URL=${ORDERS_DATABASE_URL}
+    image: northamerica-northeast1-docker.pkg.dev/microservices/image-registry/orders-ms
     environment:
       - PORT=3002
       - DATABASE_URL=${ORDERS_DATABASE_URL}
@@ -196,8 +145,6 @@ services:
     networks:
       - microservices-network
     depends_on:
-      orders-db:
-        condition: service_healthy
       nats-server:
         condition: service_healthy
     restart: unless-stopped
@@ -221,7 +168,7 @@ services:
     build:
       context: ./auth-ms
       dockerfile: Dockerfile.prod
-    image: auth-ms-prod:latest
+    image: northamerica-northeast1-docker.pkg.dev/microservices/image-registry/auth-ms
     environment:
       - PORT=3000
       - NATS_SERVERS=nats://nats-server:4222
